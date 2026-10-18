@@ -39,3 +39,12 @@ License: CC BY-NC 4.0 (non-commercial use only) — see `.claude/skills/ARS-LICE
 Try it: ask Claude to plan a paper ("help me plan a paper on …") or start a
 literature review. The `/ars-*` slash commands ship only with the plugin install
 (`/plugin marketplace add Imbad0202/academic-research-skills`).
+
+## Academic Humanizer
+
+[AIScientists-Dev/academic-humanizer](https://github.com/AIScientists-Dev/academic-humanizer)
+(MIT, v0.3.3, upstream commit `94b88b23703bed7df507acae7d6d5876209a0cdf`) is installed in
+`.claude/skills/academic-humanizer/` (`SKILL.md`, examples, license). It is an editing pass for
+AI-assisted papers and NSF/NIH proposals: it trims generic AI phrasing and matches claims to evidence
+without changing numbers or citations. Run `/academic-humanizer` and paste a section or point it at a
+file. It does not replace the venue's AI-use disclosure requirements.
