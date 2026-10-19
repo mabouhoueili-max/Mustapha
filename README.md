@@ -48,3 +48,21 @@ literature review. The `/ars-*` slash commands ship only with the plugin install
 AI-assisted papers and NSF/NIH proposals: it trims generic AI phrasing and matches claims to evidence
 without changing numbers or citations. Run `/academic-humanizer` and paste a section or point it at a
 file. It does not replace the venue's AI-use disclosure requirements.
+
+## Harvey (autonomous sales agent)
+
+`harvey/` is a copy of [ethanplusai/harvey](https://github.com/ethanplusai/harvey)
+(MIT, upstream commit `e114e95471b1bf155454fca108f0730b66a47a01`). It is a Python app, not a
+Claude skill: it finds businesses, writes and sends cold email, and handles replies in a loop.
+It is meant to run on your own computer with your own mailbox and Claude login. Nothing is
+configured here (no `.env`, no mailbox, no LinkedIn).
+
+```bash
+cd harvey
+python3 -m venv .venv && source .venv/bin/activate && pip install -e .
+claude   # then say "set up Harvey for me"
+```
+
+Keep the defaults: `require_approval: true` (every email waits for you in the outbox) and
+LinkedIn automation off (it breaks LinkedIn's terms and can get the account restricted). Read
+`harvey/README.md` § "Legal and deliverability" before sending anything.
