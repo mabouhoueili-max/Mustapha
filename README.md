@@ -66,3 +66,15 @@ claude   # then say "set up Harvey for me"
 Keep the defaults: `require_approval: true` (every email waits for you in the outbox) and
 LinkedIn automation off (it breaks LinkedIn's terms and can get the account restricted). Read
 `harvey/README.md` § "Legal and deliverability" before sending anything.
+
+## tradesim (trading-sim/)
+
+`trading-sim/` is a live paper-trading simulator for stocks, ETFs, commodities
+and crypto, run by three agents: a market data agent, a trader agent, and a risk
+manager agent. Standard library only:
+
+```bash
+cd trading-sim && python3 -m tradesim run --seed 7
+```
+
+See `trading-sim/README.md`.
