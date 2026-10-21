@@ -74,7 +74,7 @@ and crypto, run by three agents: a market data agent, a trader agent, and a risk
 manager agent. Standard library only:
 
 ```bash
-cd trading-sim && python3 -m tradesim run --seed 7
+cd trading-sim && python3 -m tradesim run --feed live   # or --seed 7 for offline simulated prices
 ```
 
 See `trading-sim/README.md`.

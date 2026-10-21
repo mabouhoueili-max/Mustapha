@@ -35,7 +35,8 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--feed", choices=["sim", "live"], default="sim",
                      help="sim = generated prices; live = Yahoo Finance quotes, simulated on failure")
     run.add_argument("--ticks", type=int, default=500)
-    run.add_argument("--interval", type=float, default=0.0, help="seconds to wait between ticks")
+    run.add_argument("--interval", type=float, default=None,
+                     help="seconds between ticks (default: 0 for sim, 60 for live)")
     run.add_argument("--report-every", type=int, default=100)
     run.add_argument("--seconds-per-tick", type=float, default=3600,
                      help="simulated market time per tick (sim feed)")
@@ -50,6 +51,8 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--max-drawdown", type=float, default=0.20)
     run.add_argument("--trades-csv", help="write every fill to this CSV file")
     args = p.parse_args(argv)
+    if args.interval is None:
+        args.interval = 60.0 if args.feed == "live" else 0.0
 
     sim = build(args)
     print("Agents:")
@@ -61,6 +64,21 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[{f.tick:>5}] FILL {f.side.value:<4} {f.quantity:g} {f.symbol} @ {f.price:,.2f}  ({f.reason})")
         if args.report_every and s.last.tick % args.report_every == 0:
             print(s.report())
+
+    if args.feed == "live":
+        print("Checking live quotes...")
+        quotes = sim.market.live.quotes(sim.market.assets)
+        for asset in sim.market.assets:
+            if asset.symbol in quotes:
+                print(f"  {asset.symbol:<5} {quotes[asset.symbol]:>12,.2f}")
+            else:
+                print(f"  {asset.symbol:<5} FAILED  {sim.market.live.last_errors.get(asset.symbol, '')}")
+        if not quotes:
+            print("No live quotes at all. Check your internet connection or firewall "
+                  "(hosts: query1/query2.finance.yahoo.com, api.coinbase.com).")
+            return 1
+        sim.warm_up()
+        print(sim.market.log[-1].split(": ", 1)[1])
 
     try:
         sim.run(args.ticks, interval=args.interval, on_tick=on_tick)

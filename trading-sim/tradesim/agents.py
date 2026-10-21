@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import random
+import time
 from collections import deque
 
 from .assets import Asset, AssetClass, round_lot
@@ -31,7 +32,7 @@ class Agent:
 
 class MarketDataAgent(Agent):
     name = "market"
-    role = "Publishes prices for every asset; live quotes when available, simulated otherwise."
+    role = "Publishes prices for every asset: live quotes with --feed live, simulated otherwise."
 
     def __init__(self, assets: list[Asset], *, live: LiveFeed | None = None,
                  seconds_per_tick: float = 60.0, seed: int | None = None) -> None:
@@ -40,7 +41,8 @@ class MarketDataAgent(Agent):
         self.live = live
         self.dt = seconds_per_tick / (365 * 24 * 3600)  # fraction of a year
         self.rng = random.Random(seed)
-        self.prices = {a.symbol: a.start_price for a in assets}
+        # Live mode starts with no prices: nothing is tradable until a real quote arrives.
+        self.prices = {} if live else {a.symbol: a.start_price for a in assets}
         self.tick = 0
         self.clock = 0.0
 
@@ -53,20 +55,39 @@ class MarketDataAgent(Agent):
 
     def publish(self) -> MarketSnapshot:
         self.tick += 1
-        self.clock += self.dt * 365 * 24 * 3600
-        quotes = self.live.quotes(self.assets) if self.live else {}
+        if not self.live:
+            self.clock += self.dt * 365 * 24 * 3600
+            for asset in self.assets:
+                self.prices[asset.symbol] = self._simulate(asset)
+            return MarketSnapshot(self.tick, self.clock, dict(self.prices),
+                                  {s: "sim" for s in self.prices})
+
+        # Live: real quotes only. A failed quote keeps the last real price, marked stale.
+        self.clock = time.time()
+        quotes = self.live.quotes(self.assets)
         source = {}
         for asset in self.assets:
             if asset.symbol in quotes:
                 self.prices[asset.symbol] = quotes[asset.symbol]
                 source[asset.symbol] = "live"
-            else:
-                self.prices[asset.symbol] = self._simulate(asset)
-                source[asset.symbol] = "sim"
-        if self.live and len(quotes) < len(self.assets):
-            missing = sorted(a.symbol for a in self.assets if a.symbol not in quotes)
-            self.note(self.tick, f"no live quote for {', '.join(missing)}; simulated")
+            elif asset.symbol in self.prices:
+                source[asset.symbol] = "stale"
+        if self.live.last_errors:
+            detail = "; ".join(f"{s} ({e})" for s, e in sorted(self.live.last_errors.items()))
+            self.note(self.tick, f"no live quote for {detail}")
         return MarketSnapshot(self.tick, self.clock, dict(self.prices), source)
+
+    def warmup_history(self, bars: int) -> dict[str, list[float]]:
+        """Recent real 1-minute closes per symbol, so the trader can start at once."""
+        if not self.live:
+            return {}
+        out = {}
+        for asset in self.assets:
+            closes = self.live.history(asset, bars)
+            if closes:
+                out[asset.symbol] = closes
+        self.note(0, f"warm-up history loaded for {len(out)}/{len(self.assets)} symbols")
+        return out
 
 
 class TraderAgent(Agent):
@@ -84,6 +105,11 @@ class TraderAgent(Agent):
         self.band = band  # fast MA must clear the slow one by this fraction, to avoid whipsaws
         self.history = {s: deque(maxlen=slow) for s in self.assets}
 
+    def seed_history(self, history: dict[str, list[float]]) -> None:
+        for sym, closes in history.items():
+            if sym in self.history:
+                self.history[sym].extend(closes)
+
     def _averages(self, symbol: str) -> tuple[float, float] | None:
         h = self.history[symbol]
         if len(h) < self.slow:
@@ -93,10 +119,13 @@ class TraderAgent(Agent):
 
     def propose(self, snap: MarketSnapshot, portfolio: Portfolio) -> list[OrderProposal]:
         for sym, price in snap.prices.items():
-            self.history[sym].append(price)
+            if snap.source.get(sym) in ("live", "sim"):
+                self.history[sym].append(price)
         equity = portfolio.equity(snap.prices)
         orders = []
         for sym, asset in self.assets.items():
+            if snap.source.get(sym) not in ("live", "sim"):
+                continue  # no fresh price this tick: don't act on it
             avgs = self._averages(sym)
             if avgs is None:
                 continue
@@ -177,6 +206,8 @@ class RiskManagerAgent(Agent):
 
         if self.halted:
             return self._reject(decision, snap, "trading halted by kill switch")
+        if snap.source.get(proposal.symbol) not in ("live", "sim"):
+            return self._reject(decision, snap, "no fresh price")
         if snap.tick < self.cooldown_until.get(proposal.symbol, 0):
             return self._reject(decision, snap, "cooling down after stop-loss")
 

@@ -5,15 +5,35 @@ from tradesim.agents import MarketDataAgent, RiskManagerAgent, TraderAgent
 from tradesim.assets import DEFAULT_UNIVERSE, AssetClass, round_lot
 from tradesim.cli import main
 from tradesim.engine import Simulation
-from tradesim.feeds import LiveFeed, parse_chart
+from tradesim import feeds
+from tradesim.feeds import LiveFeed, parse_chart, parse_chart_closes, parse_coinbase
 from tradesim.messages import MarketSnapshot, OrderProposal, Side
 from tradesim.portfolio import Portfolio
 
 ASSETS = {a.symbol: a for a in DEFAULT_UNIVERSE}
 
 
-def snap(prices, tick=1):
-    return MarketSnapshot(tick, 0.0, prices, {s: "sim" for s in prices})
+def snap(prices, tick=1, source="sim"):
+    return MarketSnapshot(tick, 0.0, prices, {s: source for s in prices})
+
+
+class FakeNet:
+    """Stands in for the internet: answers Coinbase and Yahoo URLs."""
+
+    def __init__(self, fail=(), down_hosts=(), closes=None, price=100.0):
+        self.fail, self.down_hosts = set(fail), set(down_hosts)
+        self.closes, self.price = closes or [], price
+
+    def __call__(self, url, timeout):
+        host = url.split("/")[2]
+        if host in self.down_hosts or any(f"/{ASSETS[s].live_symbol}" in url for s in self.fail):
+            raise OSError("connection refused")
+        if host == "api.coinbase.com":
+            return json.dumps({"data": {"amount": "61234.5"}}).encode()
+        return json.dumps({"chart": {"result": [{
+            "meta": {"regularMarketPrice": self.price},
+            "indicators": {"quote": [{"close": self.closes + [None]}]},
+        }]}}).encode()
 
 
 def portfolio(cash=100_000):
@@ -61,23 +81,40 @@ class MarketAgentTests(unittest.TestCase):
         b = MarketDataAgent(DEFAULT_UNIVERSE, seed=1)
         self.assertEqual(a.publish().prices, b.publish().prices)
 
-    def test_live_quotes_used_and_missing_ones_simulated(self):
-        payload = json.dumps({"chart": {"result": [{"meta": {"regularMarketPrice": 61_234.5}}]}}).encode()
-
-        def fetch(url, timeout):
-            if "BTC-USD" in url:
-                return payload
-            raise OSError("offline")
-
-        agent = MarketDataAgent(DEFAULT_UNIVERSE, live=LiveFeed(fetch=fetch), seed=1)
+    def test_live_mode_uses_real_quotes_and_never_simulates(self):
+        net = FakeNet(fail={"AAPL"})
+        agent = MarketDataAgent(DEFAULT_UNIVERSE, live=LiveFeed(fetch=net))
         s = agent.publish()
-        self.assertEqual(s.prices["BTC"], 61_234.5)
-        self.assertEqual(s.source["BTC"], "live")
-        self.assertEqual(s.source["AAPL"], "sim")
-        self.assertTrue(agent.log)
+        self.assertEqual(s.prices["BTC"], 61_234.5)      # from Coinbase
+        self.assertEqual(s.prices["SPY"], 100.0)          # from Yahoo
+        self.assertNotIn("AAPL", s.prices)                # never quoted: no price at all
+        self.assertTrue(any("AAPL" in line for line in agent.log))
+        net.fail = {"SPY"}
+        s = agent.publish()
+        self.assertEqual((s.prices["SPY"], s.source["SPY"]), (100.0, "stale"))
+        self.assertEqual(s.source["AAPL"], "live")
+
+    def test_crypto_falls_back_to_yahoo_and_yahoo_to_query2(self):
+        net = FakeNet(down_hosts={"api.coinbase.com", "query1.finance.yahoo.com"})
+        quotes = LiveFeed(fetch=net).quotes([ASSETS["ETH"], ASSETS["GOLD"]])
+        self.assertEqual(quotes, {"ETH": 100.0, "GOLD": 100.0})
+
+    def test_warmup_lets_trader_act_on_first_tick(self):
+        net = FakeNet(closes=[100 + i * 0.5 for i in range(40)])
+        assets = [ASSETS["SPY"]]
+        market = MarketDataAgent(assets, live=LiveFeed(fetch=net))
+        trader = TraderAgent(assets)
+        sim = Simulation(market, trader, RiskManagerAgent(assets), portfolio())
+        sim.warm_up()
+        self.assertEqual(len(trader.history["SPY"]), trader.slow)
+        net.price = 125.0
+        result = sim.step()
+        self.assertEqual([f.side for f in result.fills], [Side.BUY])
 
     def test_parse_chart_rejects_garbage(self):
         self.assertIsNone(parse_chart(b"{}"))
+        self.assertIsNone(parse_coinbase(b'{"data": {"amount": "-1"}}'))
+        self.assertEqual(parse_chart_closes(b"{}"), [])
         self.assertIsNone(parse_chart(b"{\"chart\": {\"result\": null}}"))
 
 
@@ -143,6 +180,11 @@ class RiskTests(unittest.TestCase):
         d = risk.review(OrderProposal("SPY", Side.BUY, 1, "t"), snap({"SPY": 500.0}, 3), pf)
         self.assertFalse(d.approved)
 
+    def test_no_buys_on_stale_price(self):
+        risk = RiskManagerAgent(DEFAULT_UNIVERSE)
+        d = risk.review(OrderProposal("SPY", Side.BUY, 1, "t"), snap({"SPY": 500.0}, source="stale"), portfolio())
+        self.assertFalse(d.approved)
+
     def test_sells_always_allowed(self):
         risk = RiskManagerAgent(DEFAULT_UNIVERSE)
         risk.halted = True
@@ -180,6 +222,34 @@ class SimulationTests(unittest.TestCase):
             self.assertIn("Agents:", out.getvalue())
             with open(path) as fh:
                 self.assertTrue(fh.readline().startswith("tick,symbol"))
+
+
+    def test_cli_live_with_fake_network(self):
+        import contextlib, io
+        out = io.StringIO()
+        original = feeds._http_get
+        feeds._http_get = FakeNet(closes=[100.0] * 40)
+        try:
+            with contextlib.redirect_stdout(out):
+                rc = main(["run", "--feed", "live", "--ticks", "2", "--interval", "0",
+                           "--report-every", "0", "--symbols", "SPY,BTC"])
+        finally:
+            feeds._http_get = original
+        self.assertEqual(rc, 0)
+        self.assertIn("warm-up history loaded for 2/2", out.getvalue())
+
+    def test_cli_live_offline_exits_with_error(self):
+        import contextlib, io
+        out = io.StringIO()
+        original = feeds._http_get
+        feeds._http_get = FakeNet(down_hosts={"api.coinbase.com", *feeds.YAHOO_HOSTS})
+        try:
+            with contextlib.redirect_stdout(out):
+                rc = main(["run", "--feed", "live", "--ticks", "1", "--symbols", "SPY"])
+        finally:
+            feeds._http_get = original
+        self.assertEqual(rc, 1)
+        self.assertIn("No live quotes", out.getvalue())
 
 
 if __name__ == "__main__":

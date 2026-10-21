@@ -61,6 +61,10 @@ class Simulation:
         pf.equity_curve.append(pf.equity(snap.prices))
         return result
 
+    def warm_up(self) -> None:
+        """Live mode: preload the trader with recent real bars instead of waiting."""
+        self.trader.seed_history(self.market.warmup_history(self.trader.slow))
+
     def run(self, ticks: int, interval: float = 0.0, on_tick=None) -> None:
         for _ in range(ticks):
             result = self.step()
@@ -91,9 +95,11 @@ class Simulation:
     def report(self, log_lines: int = 15) -> str:
         pf, prices = self.portfolio, self.last.prices
         equity = pf.equity(prices)
+        when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.last.timestamp)) \
+            if self.market.live else f"sim t+{self.last.timestamp / 3600:.0f}h"
         lines = [
             "=" * 64,
-            f"Tick {self.last.tick}  equity ${equity:,.2f}  "
+            f"{when}  Tick {self.last.tick}  equity ${equity:,.2f}  "
             f"return {equity / self.starting_equity - 1:+.2%}  max drawdown {self.max_drawdown():.2%}",
             f"cash ${pf.cash:,.2f}  trades {len(pf.fills)}  fees ${pf.fees_paid:,.2f}  "
             f"{'HALTED' if self.risk.halted else 'trading'}",
@@ -103,17 +109,21 @@ class Simulation:
         for cls, value in self.exposure_by_class().items():
             lines.append(f"  {cls.value:<10} ${value:>12,.2f}  {value / equity:6.1%}")
         lines += ["", f"{'Symbol':<6} {'Class':<10} {'Price':>12} {'Qty':>12} {'Value':>12} {'P/L':>8}"]
+        marks = {"live": "", "sim": "*", "stale": "~"}
         for asset in self.market.assets:
             pos = pf.positions.get(asset.symbol)
+            if asset.symbol not in prices:
+                lines.append(f"{asset.symbol:<6} {asset.asset_class.value:<10} {'no quote':>12}")
+                continue
             price = prices[asset.symbol]
-            src = "" if self.last.source[asset.symbol] == "live" else "*"
+            src = marks[self.last.source.get(asset.symbol, "stale")]
             if pos:
                 pnl = price / pos.avg_cost - 1
                 lines.append(f"{asset.symbol:<6} {asset.asset_class.value:<10} {price:>11,.2f}{src} "
                              f"{pos.quantity:>12g} {pos.quantity * price:>12,.2f} {pnl:>+8.1%}")
             else:
                 lines.append(f"{asset.symbol:<6} {asset.asset_class.value:<10} {price:>11,.2f}{src}")
-        lines.append("(* = simulated price)")
+        lines.append("(* = simulated price, ~ = stale: last live quote failed)")
         logs = sorted(l for a in self.agents for l in a.log)[-log_lines:]
         if logs:
             lines += ["", "Recent agent activity:"] + [f"  {l}" for l in logs]
