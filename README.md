@@ -78,3 +78,15 @@ cd trading-sim && python3 -m tradesim run --feed live   # or --seed 7 for offlin
 ```
 
 See `trading-sim/README.md`.
+
+## TradeSim iPhone app (trading-app/)
+
+`trading-app/` is the same three-agent live paper-trading platform as an
+iPhone app (Expo / React Native), with live prices, manual trading, and the
+agents' activity feed. Try it with Expo Go:
+
+```bash
+cd trading-app && npm install && npx expo start   # scan the QR code with your iPhone camera
+```
+
+See `trading-app/README.md`.
